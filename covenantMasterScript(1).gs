@@ -46,12 +46,38 @@ const FORM1_HEADER = [
 ];
 
 // ============================================================
-//  HELPER — extract spreadsheet ID from a Google Sheets URL
+//  HELPER — extract spreadsheet ID from a full URL or raw ID string
+//  Accepts:
+//    - Full URL:  https://docs.google.com/spreadsheets/d/ABC123/edit#gid=0
+//    - Raw ID:    ABC123xyz_-fooBar  (no slashes, no dots)
+//  Also strips accidental whitespace and smart/curly quotes.
 // ============================================================
-function extractSheetId(url) {
-  const match = url.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
-  if (!match) throw new Error('Invalid Google Sheets URL: ' + url);
-  return match[1];
+function extractSheetId(input) {
+  // Sanitize: trim whitespace and strip smart/curly quotes
+  const cleaned = String(input)
+    .trim()
+    .replace(/[\u2018\u2019\u201A\u201B]/g, "'")   // curly single quotes
+    .replace(/[\u201C\u201D\u201E\u201F]/g, '"');   // curly double quotes
+
+  // If it looks like a full URL, extract the ID portion
+  if (cleaned.indexOf('spreadsheets') !== -1 || cleaned.indexOf('http') !== -1) {
+    const match = cleaned.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
+    if (!match) throw new Error(
+      'Could not find a Sheet ID in this URL: "' + cleaned + '"\n' +
+      'Expected format: https://docs.google.com/spreadsheets/d/YOUR_ID/edit'
+    );
+    return match[1];
+  }
+
+  // Otherwise treat the whole string as a raw ID
+  if (/^[a-zA-Z0-9_-]+$/.test(cleaned)) {
+    return cleaned;
+  }
+
+  throw new Error(
+    'Invalid Sheet ID or URL: "' + cleaned + '"\n' +
+    'Paste either the full Google Sheets URL or just the ID between /d/ and /edit'
+  );
 }
 
 // ============================================================
@@ -61,7 +87,9 @@ function extractSheetId(url) {
 function findHeaderRowIndex(data) {
   for (let i = 0; i < Math.min(data.length, 10); i++) {
     for (let j = 0; j < data[i].length; j++) {
-      if (String(data[i][j]).trim().toLowerCase() === 'sr no') {
+      // Match "sr no" or "sr no." (with optional trailing dot/space)
+      const cell = String(data[i][j]).trim().toLowerCase().replace(/\.+$/, '');
+      if (cell === 'sr no') {
         return i;
       }
     }
@@ -109,9 +137,11 @@ function getCol(row, colMap, ...keys) {
 //  Covenant column in Form1 is left EMPTY (not sourced from Form2).
 // ============================================================
 function parseClientColumn(headerRow) {
-  // Regex: name ends just before ",\s*(" — comma + optional space + open bracket
-  // digits inside brackets = cust id
-  const pattern = /^(.+?),\s*\((\d{6,12})\)/;
+  // Regex: name ends just before ", (" — comma + optional space + open bracket
+  // Cust ID inside brackets: alphanumeric (letters + digits), 4–15 chars
+  // e.g. "GH2 Solar Limited, (10021147) WCDL- 20 Crs"
+  //      "Acme Corp, (ABC123X) OD- 50 Crs"
+  const pattern = /^(.+?),\s*\(([A-Za-z0-9]{4,15})\)/;
   for (let i = 0; i < headerRow.length; i++) {
     const cell = String(headerRow[i]).trim();
     const m = cell.match(pattern);
@@ -120,7 +150,6 @@ function parseClientColumn(headerRow) {
         colIndex: i,
         clientName: m[1].trim(),
         custId: m[2].trim()
-        // No covenant field — Form1 Covenant is left blank
       };
     }
   }
@@ -194,9 +223,10 @@ function transformSheet(sheet, sheetLabel) {
     Logger.log('[WARN] ' + sheetLabel + ' — could not find client/cust-id column. Client Name and Cust ID will be empty.');
   }
 
-  const clientName = clientInfo ? clientInfo.clientName : '';
-  const custId     = clientInfo ? clientInfo.custId     : '';
-  // Covenant is always left empty in Form1 (not sourced from Form2)
+  const clientName    = clientInfo ? clientInfo.clientName : '';
+  const custId        = clientInfo ? clientInfo.custId     : '';
+  const covenantColIdx = clientInfo ? clientInfo.colIndex   : -1;
+  // Covenant value comes from the data rows under the client column header
 
   // 3. Process each data row (skip header row and any rows before it)
   const outputRows = [];
@@ -261,6 +291,11 @@ function transformSheet(sheet, sheetLabel) {
     const rmName       = '';
     const businessHead = '';
 
+    // Covenant — data cell in the client column for this row
+    const covenantValue = (covenantColIdx >= 0 && row[covenantColIdx] !== undefined)
+      ? String(row[covenantColIdx]).trim()
+      : '';
+
     // Build Form1 row in column order
     const form1Row = [
       srCounter,          // Sr No (auto-increment across all sheets)
@@ -268,7 +303,7 @@ function transformSheet(sheet, sheetLabel) {
       clientName,         // Client Name
       conditionType,      // Condition Type
       covenantType,       // Covenant Type
-      '',                 // Covenant — left blank (not in Form2)
+      covenantValue,      // Covenant — from data rows under client column
       rmName,             // RM Name (blank)
       businessHead,       // Business Head (blank)
       initialDateOfDisb,  // Initial Date of Disb
@@ -300,7 +335,7 @@ function buildMasterSheet() {
     masterSheet = targetSS.insertSheet(CONFIG.targetTabName);
     Logger.log('Created new tab: ' + CONFIG.targetTabName);
   } else {
-    masterSheet.clearContents();
+    masterSheet.clear();            // wipes contents + formatting for a clean slate
     Logger.log('Cleared existing tab: ' + CONFIG.targetTabName);
   }
 
@@ -331,22 +366,22 @@ function buildMasterSheet() {
     }
 
     // Determine which tabs to process
-    let tabs;
-    if (source.tabNames && source.tabNames.length > 0) {
-      // Process only specified tabs
-      tabs = source.tabNames.map(function(name) {
-        const s = sourceSS.getSheetByName(name);
-        if (!s) {
-          Logger.log('[ERROR] Tab "' + name + '" not found in source #' + (srcIdx + 1));
-          totalErrors++;
-        }
-        return s;
-      }).filter(Boolean);
-    } else {
-      // Process ALL tabs in the spreadsheet
-      tabs = sourceSS.getSheets();
-    }
-
+    let tabs = sourceSS.getSheets(); // Get ALL 50 tabs first
+    
+    // --- EXCLUSION FILTER ---
+    // List the exact names of the 3 tabs you want to skip here:
+    const tabsToSkip = ['Tab To Skip 1', 'Tab To Skip 2', 'Tab To Skip 3']; 
+    
+    tabs = tabs.filter(function(sheet) {
+      const sheetName = sheet.getName();
+      // If the sheet name is in our skip list, filter it out
+      if (tabsToSkip.includes(sheetName)) {
+        Logger.log('[EXCLUDE] Skipping tab: ' + sheetName);
+        return false; 
+      }
+      return true;
+    });
+    // ------------------------
     tabs.forEach(function(sheet) {
       const label = sourceSS.getName() + ' → ' + sheet.getName();
       try {
