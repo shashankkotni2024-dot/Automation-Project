@@ -1,5 +1,5 @@
 // ============================================================
-//  CONFIGURATION — fill in your sheet URLs below
+//   CONFIGURATION — fill in your sheet URLs below
 // ============================================================
 const CONFIG = {
   // Each entry = one source spreadsheet that contains Form2-style tabs.
@@ -10,10 +10,6 @@ const CONFIG = {
       // Leave tabNames empty [] to process ALL tabs in this spreadsheet
       // OR list specific tab names to process only those tabs
       tabNames: []  // e.g. ['Sheet1', 'Sheet2'] or [] for all tabs
-    },
-    {
-      url: 'https://docs.google.com/spreadsheets/d/SOURCE_SHEET_ID_2/edit',
-      tabNames: []
     }
     // Add more source sheets here following the same pattern
   ],
@@ -26,7 +22,7 @@ const CONFIG = {
 };
 
 // ============================================================
-//  FORM1 HEADER (output columns in order)
+//   FORM1 HEADER (output columns in order)
 // ============================================================
 const FORM1_HEADER = [
   'Sr No',
@@ -46,20 +42,14 @@ const FORM1_HEADER = [
 ];
 
 // ============================================================
-//  HELPER — extract spreadsheet ID from a full URL or raw ID string
-//  Accepts:
-//    - Full URL:  https://docs.google.com/spreadsheets/d/ABC123/edit#gid=0
-//    - Raw ID:    ABC123xyz_-fooBar  (no slashes, no dots)
-//  Also strips accidental whitespace and smart/curly quotes.
+//   HELPER — extract spreadsheet ID from a full URL or raw ID string
 // ============================================================
 function extractSheetId(input) {
-  // Sanitize: trim whitespace and strip smart/curly quotes
   const cleaned = String(input)
     .trim()
     .replace(/[\u2018\u2019\u201A\u201B]/g, "'")   // curly single quotes
     .replace(/[\u201C\u201D\u201E\u201F]/g, '"');   // curly double quotes
 
-  // If it looks like a full URL, extract the ID portion
   if (cleaned.indexOf('spreadsheets') !== -1 || cleaned.indexOf('http') !== -1) {
     const match = cleaned.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
     if (!match) throw new Error(
@@ -69,7 +59,6 @@ function extractSheetId(input) {
     return match[1];
   }
 
-  // Otherwise treat the whole string as a raw ID
   if (/^[a-zA-Z0-9_-]+$/.test(cleaned)) {
     return cleaned;
   }
@@ -81,13 +70,11 @@ function extractSheetId(input) {
 }
 
 // ============================================================
-//  HELPER — find the header row index (row containing "sr no")
-//  Returns the 0-based index in the data array, or -1 if not found
+//   HELPER — find the header row index (row containing "sr no")
 // ============================================================
 function findHeaderRowIndex(data) {
   for (let i = 0; i < Math.min(data.length, 10); i++) {
     for (let j = 0; j < data[i].length; j++) {
-      // Match "sr no" or "sr no." (with optional trailing dot/space)
       const cell = String(data[i][j]).trim().toLowerCase().replace(/\.+$/, '');
       if (cell === 'sr no') {
         return i;
@@ -98,8 +85,7 @@ function findHeaderRowIndex(data) {
 }
 
 // ============================================================
-//  HELPER — build a column-name → column-index map from a header row
-//  Keys are lowercased + trimmed for resilient matching
+//   HELPER — build a column-name → column-index map from a header row
 // ============================================================
 function buildColumnMap(headerRow) {
   const map = {};
@@ -111,7 +97,7 @@ function buildColumnMap(headerRow) {
 }
 
 // ============================================================
-//  HELPER — safe column lookup (returns '' if column missing)
+//   HELPER — safe column lookup (returns '' if column missing)
 // ============================================================
 function getCol(row, colMap, ...keys) {
   for (const key of keys) {
@@ -124,31 +110,24 @@ function getCol(row, colMap, ...keys) {
 }
 
 // ============================================================
-//  HELPER — parse Client Name and Cust ID from a Form2 column header
-//
-//  Form2 header pattern (one of the data columns):
-//    "GH2 Solar Limited, (10021147) WCDL- 20 Crs"
-//    i.e.  <Client Name>,<space>(<CustID>)<space><Covenant/facility>
-//
-//  There is a COMMA between the client name and the opening bracket.
-//  Regex captures:
-//    - everything before ", (" as the Client Name
-//    - digits inside () as the Cust ID
-//  Covenant column in Form1 is left EMPTY (not sourced from Form2).
+//   HELPER — parse Client Name and Cust ID from a Form2 column header
+//   UPDATED: Comma is now optional to support formats with or without it.
 // ============================================================
 function parseClientColumn(headerRow) {
-  // Regex: name ends just before ", (" — comma + optional space + open bracket
-  // Cust ID inside brackets: alphanumeric (letters + digits), 4–15 chars
-  // e.g. "GH2 Solar Limited, (10021147) WCDL- 20 Crs"
-  //      "Acme Corp, (ABC123X) OD- 50 Crs"
-  const pattern = /^(.+?),\s*\(([A-Za-z0-9]{4,15})\)/;
+  // Regex adjustments:
+  // ,?       --> makes the comma completely optional
+  // \s* --> handles zero or more spaces safely
+  // \(       --> looks for the start of brackets
+  // ([A-Za-z0-9]{4,15}) --> captures the exact client identifier alphanumeric string
+  const pattern = /^(.+?)(?:,|\s)*\(([A-Za-z0-9]{4,15})\)/;
+  
   for (let i = 0; i < headerRow.length; i++) {
     const cell = String(headerRow[i]).trim();
     const m = cell.match(pattern);
     if (m) {
       return {
         colIndex: i,
-        clientName: m[1].trim(),
+        clientName: m[1].replace(/^[,\s]+|[,\s]+$/g, '').trim(), // clean extra trailing commas/spaces
         custId: m[2].trim()
       };
     }
@@ -157,25 +136,21 @@ function parseClientColumn(headerRow) {
 }
 
 // ============================================================
-//  HELPER — normalise Condition Type
-//  Fixes "preceeding" → "preceding" and standardises casing
+//   HELPER — normalise Condition Type
 // ============================================================
 function normaliseConditionType(raw) {
   if (!raw) return '';
   let val = String(raw).trim().toLowerCase();
-
-  // Fix common misspelling
   val = val.replace(/preceeding/g, 'preceding');
 
   if (val.includes('subsequent')) return 'Condition Subsequent';
   if (val.includes('preceding'))  return 'Condition Preceding';
 
-  // Return title-cased original if it doesn't match known types
   return String(raw).trim();
 }
 
 // ============================================================
-//  HELPER — normalise Covenant Type to one of 4 allowed values
+//   HELPER — normalise Covenant Type to one of 4 allowed values
 // ============================================================
 function normaliseCovenantType(raw) {
   if (!raw) return '';
@@ -184,12 +159,11 @@ function normaliseCovenantType(raw) {
   if (val.includes('collateral'))   return 'Collateral';
   if (val.includes('financial'))    return 'Financial';
   if (val.includes('other'))        return 'Others';
-  return String(raw).trim(); // keep original if unrecognised
+  return String(raw).trim();
 }
 
 // ============================================================
-//  HELPER — resolve checkbox value to readable string
-//  Google Sheets checkboxes come in as TRUE/FALSE booleans
+//   HELPER — resolve checkbox value to readable string
 // ============================================================
 function resolveCheckbox(val) {
   if (val === true  || String(val).toLowerCase() === 'true')  return 'Yes';
@@ -198,19 +172,19 @@ function resolveCheckbox(val) {
 }
 
 // ============================================================
-//  CORE — transform one Form2 sheet into an array of Form1 rows
+//   CORE — transform one Form2 sheet into an array of Form1 rows
 // ============================================================
 function transformSheet(sheet, sheetLabel) {
   const data = sheet.getDataRange().getValues();
   if (!data || data.length === 0) {
-    Logger.log('[SKIP] ' + sheetLabel + ' — no data');
+    Logger.log('[SKIP] ' + sheetLabel + ' — no data found.');
     return [];
   }
 
   // 1. Locate header row
   const headerRowIdx = findHeaderRowIndex(data);
   if (headerRowIdx === -1) {
-    Logger.log('[SKIP] ' + sheetLabel + ' — "Sr No" header row not found in first 10 rows');
+    Logger.log('[SKIP] ' + sheetLabel + ' — "Sr No" header row not found in first 10 rows.');
     return [];
   }
 
@@ -219,14 +193,16 @@ function transformSheet(sheet, sheetLabel) {
 
   // 2. Parse client name, cust id, covenant from the special column header
   const clientInfo = parseClientColumn(headerRow);
+  
+  // CRITICAL UPDATE: If Client Info or Cust ID cannot be extracted, skip this entire tab immediately!
   if (!clientInfo) {
-    Logger.log('[WARN] ' + sheetLabel + ' — could not find client/cust-id column. Client Name and Cust ID will be empty.');
+    Logger.log('[REJECT SHEET] ' + sheetLabel + ' — Skipped entire sheet because Client Name/Cust ID column header could not be verified.');
+    return [];
   }
 
-  const clientName    = clientInfo ? clientInfo.clientName : '';
-  const custId        = clientInfo ? clientInfo.custId     : '';
-  const covenantColIdx = clientInfo ? clientInfo.colIndex   : -1;
-  // Covenant value comes from the data rows under the client column header
+  const clientName    = clientInfo.clientName;
+  const custId        = clientInfo.custId;
+  const covenantColIdx = clientInfo.colIndex;
 
   // 3. Process each data row (skip header row and any rows before it)
   const outputRows = [];
@@ -241,53 +217,28 @@ function transformSheet(sheet, sheetLabel) {
     // Skip sub-header or total rows (if Sr No cell is non-numeric text)
     const srNoRaw = getCol(row, colMap, 'sr no');
     if (srNoRaw !== '' && isNaN(Number(srNoRaw)) && String(srNoRaw).trim() !== '') {
-      // Could be a repeated header or section label — skip
       Logger.log('[SKIP ROW] ' + sheetLabel + ' row ' + (i + 1) + ': Sr No = "' + srNoRaw + '"');
       continue;
     }
 
     // --- Map Form2 columns → Form1 columns ---
-
-    // Condition Type (with spelling correction)
-    const conditionTypeRaw = getCol(row, colMap,
-      'condition type');
+    const conditionTypeRaw = getCol(row, colMap, 'condition type');
     const conditionType = normaliseConditionType(conditionTypeRaw);
 
-    // Covenant Type (normalised to 4 allowed values)
-    const covenantTypeRaw = getCol(row, colMap,
-      'covenant type');
+    const covenantTypeRaw = getCol(row, colMap, 'covenant type');
     const covenantType = normaliseCovenantType(covenantTypeRaw);
 
-    // Checker Status (checkbox) → not in Form1 directly; 
-    // Form2 "Document status" → Form1 "Status"
-    const statusRaw = getCol(row, colMap,
-      'document status', 'doc status');
-    // Checker status is a checkbox — resolve it but we don't output it separately
-    // (not a Form1 field). We use Document status for "Status".
+    const statusRaw = getCol(row, colMap, 'document status', 'doc status');
     const status = resolveCheckbox(statusRaw);
 
-    // Aging (Days) — Form2: "Day Past Due" / "Days Past Due"
-    // Copy as-is (including negatives)
-    const aging = getCol(row, colMap,
-      'day past due', 'days past due', 'days past due ');
+    const aging = getCol(row, colMap, 'day past due', 'days past due', 'days past due ');
 
-    // Cov Due date — Form2: "Cov Due date"
-    const covDueDate = getCol(row, colMap,
-      'cov due date', 'covenant due date');
-
-    // Closure Date — mapped FROM "Cov Due date" per requirement
-    // (covenant due date in form2 = closure date in form1)
+    const covDueDate = getCol(row, colMap, 'cov due date', 'covenant due date');
     const closureDate = covDueDate;
 
-    // Initial Date of Disb
-    const initialDateOfDisb = getCol(row, colMap,
-      'initial date of disb', 'initial date of disbursement');
+    const initialDateOfDisb = getCol(row, colMap, 'initial date of disb', 'initial date of disbursement');
+    const extendedDueDate = getCol(row, colMap, 'extended due date', 'extended due date ');
 
-    // Extended Due Date
-    const extendedDueDate = getCol(row, colMap,
-      'extended due date', 'extended due date ');
-
-    // RM Name and Business Head — not in Form2, leave blank
     const rmName       = '';
     const businessHead = '';
 
@@ -318,15 +269,14 @@ function transformSheet(sheet, sheetLabel) {
     srCounter++;
   }
 
-  Logger.log('[OK] ' + sheetLabel + ' — ' + outputRows.length + ' rows extracted');
+  Logger.log('[OK] ' + sheetLabel + ' — ' + outputRows.length + ' rows extracted cleanly.');
   return outputRows;
 }
 
 // ============================================================
-//  MAIN — entry point; run this function from the Apps Script editor
+//   MAIN — entry point; run this function from the Apps Script editor
 // ============================================================
 function buildMasterSheet() {
-  // --- Open target sheet ---
   const targetId = extractSheetId(CONFIG.targetUrl);
   const targetSS = SpreadsheetApp.openById(targetId);
 
@@ -366,27 +316,28 @@ function buildMasterSheet() {
     }
 
     // Determine which tabs to process
-    let tabs;
-    if (source.tabNames && source.tabNames.length > 0) {
-      // Process only specified tabs
-      tabs = source.tabNames.map(function(name) {
-        const s = sourceSS.getSheetByName(name);
-        if (!s) {
-          Logger.log('[ERROR] Tab "' + name + '" not found in source #' + (srcIdx + 1));
-          totalErrors++;
-        }
-        return s;
-      }).filter(Boolean);
-    } else {
-      // Process ALL tabs in the spreadsheet
-      tabs = sourceSS.getSheets();
-    }
+    let tabs = sourceSS.getSheets(); // Get ALL tabs first
+    
+    // --- EXCLUSION FILTER ---
+    // List the exact names of any specific tabs you want to hard-skip:
+    const tabsToSkip = ['Tab To Skip 1', 'Tab To Skip 2', 'Tab To Skip 3']; 
+    
+    tabs = tabs.filter(function(sheet) {
+      const sheetName = sheet.getName();
+      if (tabsToSkip.includes(sheetName)) {
+        Logger.log('[EXCLUDE] Skipping tab: ' + sheetName);
+        return false; 
+      }
+      return true;
+    });
+    // ------------------------
 
     tabs.forEach(function(sheet) {
       const label = sourceSS.getName() + ' → ' + sheet.getName();
       try {
         const rows = transformSheet(sheet, label);
-        // Re-number Sr No globally across all sheets
+        
+        // Re-number Sr No globally across all valid sheets parsed
         rows.forEach(function(row) {
           row[0] = globalSr++;
           allRows.push(row);
