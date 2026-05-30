@@ -185,18 +185,18 @@ function transformSheet(sheet, sheetLabel) {
   const headerRow = data[headerRowIdx];
   const colMap    = buildColumnMap(headerRow);
 
-  // 2. Parse client name, cust id, covenant from the special column header
+  // 2. Parse client name, cust id from header column
   const clientInfo = parseClientColumn(headerRow);
   
   if (!clientInfo) {
-    Logger.log('[WARN] ' + sheetLabel + ' — Could not extract Client Name/Cust ID column header. Fields will be left blank for these data rows.');
+    Logger.log('[WARN] ' + sheetLabel + ' — Could not extract Client Name/Cust ID header. Leaving these fields blank for data rows.');
   }
 
   const clientName    = clientInfo ? clientInfo.clientName : '';
   const custId        = clientInfo ? clientInfo.custId : '';
   const covenantColIdx = clientInfo ? clientInfo.colIndex : -1;
 
-  // 3. Process each data row (skip header row and any rows before it)
+  // 3. Process data rows
   const outputRows = [];
   let srCounter = 1;
 
@@ -206,29 +206,41 @@ function transformSheet(sheet, sheetLabel) {
     // Skip completely empty rows
     if (row.every(cell => String(cell).trim() === '')) continue;
 
-    // Skip sub-header or total rows (if Sr No cell is non-numeric text)
+    // Skip sub-header or total rows
     const srNoRaw = getCol(row, colMap, 'sr no');
     if (srNoRaw !== '' && isNaN(Number(srNoRaw)) && String(srNoRaw).trim() !== '') {
       Logger.log('[SKIP ROW] ' + sheetLabel + ' row ' + (i + 1) + ': Sr No = "' + srNoRaw + '"');
       continue;
     }
 
-    // --- Map Form2 columns → Form1 columns ---
-    const statusRaw = getCol(row, colMap, 'document status', 'doc status'); [cite: 39]
-    const status = resolveCheckbox(statusRaw); [cite: 41]
+    // Extract content fields to inspect for a ghost row
+    const conditionTypeRaw = getCol(row, colMap, 'condition type');
+    const covenantTypeRaw = getCol(row, colMap, 'covenant type');
+    const statusRaw = getCol(row, colMap, 'document status', 'doc status');
+    
+    const covenantValue = (covenantColIdx >= 0 && row[covenantColIdx] !== undefined)
+      ? String(row[covenantColIdx]).trim()
+      : '';
 
-    // --- CRITICAL FILTER UPDATED ---
-    // If the case status is explicitly marked as Closed, skip this entire data row.
+    // --- SAFELY UPDATED CRITICAL FILTER ---
+    // If core tracking metrics are entirely unpopulated, skip it.
+    // If a sheet has NO client id header (covenantColIdx === -1), we rely safely on the remaining fields.
+    if (String(conditionTypeRaw).trim() === '' && 
+        String(covenantTypeRaw).trim() === '' && 
+        String(statusRaw).trim() === '' && 
+        (covenantColIdx === -1 || covenantValue === '')) {
+      continue;
+    }
+
+    const status = resolveCheckbox(statusRaw);
+
+    // Filter out Closed cases (Only pick pending)
     if (status.trim().toLowerCase() === 'closed') {
       continue;
     }
 
-    const conditionTypeRaw = getCol(row, colMap, 'condition type');
     const conditionType = normaliseConditionType(conditionTypeRaw);
-
-    const covenantTypeRaw = getCol(row, colMap, 'covenant type');
     const covenantType = normaliseCovenantType(covenantTypeRaw);
-
     const aging = getCol(row, colMap, 'day past due', 'days past due', 'days past due ');
 
     const covDueDate = getCol(row, colMap, 'cov due date', 'covenant due date');
@@ -240,15 +252,11 @@ function transformSheet(sheet, sheetLabel) {
     const rmName       = '';
     const businessHead = '';
 
-    const covenantValue = (covenantColIdx >= 0 && row[covenantColIdx] !== undefined)
-      ? String(row[covenantColIdx]).trim()
-      : '';
-
-    // Build Form1 row in column order
+    // Build Form1 row layout
     const form1Row = [
-      srCounter,          // Sr No (auto-increment across all sheets)
-      custId,             // Cust ID
-      clientName,         // Client Name
+      srCounter,          // Sr No (auto-increment)
+      custId,             // Cust ID (will be blank if unparsed)
+      clientName,         // Client Name (will be blank if unparsed)
       conditionType,      // Condition Type
       covenantType,       // Covenant Type
       covenantValue,      // Covenant
@@ -271,7 +279,7 @@ function transformSheet(sheet, sheetLabel) {
 }
 
 // ============================================================
-//   MAIN — entry point; run this function from the Apps Script editor
+//   MAIN — entry point
 // ============================================================
 function buildMasterSheet() {
   const targetId = extractSheetId(CONFIG.targetUrl);
@@ -282,14 +290,12 @@ function buildMasterSheet() {
     masterSheet = targetSS.insertSheet(CONFIG.targetTabName);
     Logger.log('Created new tab: ' + CONFIG.targetTabName);
   } else {
-    masterSheet.clear();            // wipes contents + formatting for a clean slate
+    masterSheet.clear(); 
     Logger.log('Cleared existing tab: ' + CONFIG.targetTabName);
   }
 
-  // Write header row
   masterSheet.getRange(1, 1, 1, FORM1_HEADER.length).setValues([FORM1_HEADER]);
 
-  // Style header row
   const headerRange = masterSheet.getRange(1, 1, 1, FORM1_HEADER.length);
   headerRange.setFontWeight('bold');
   headerRange.setBackground('#4a86e8');
@@ -300,7 +306,6 @@ function buildMasterSheet() {
   let globalSr     = 1;
   let totalErrors  = 0;
 
-  // --- Iterate over each source spreadsheet ---
   CONFIG.sources.forEach(function(source, srcIdx) {
     let sourceId, sourceSS;
     try {
@@ -312,8 +317,7 @@ function buildMasterSheet() {
       return;
     }
 
-    // Determine which tabs to process
-    let tabs = sourceSS.getSheets(); // Get ALL tabs first
+    let tabs = sourceSS.getSheets();
     
     // --- EXCLUSION FILTER ---
     const tabsToSkip = ['Tab To Skip 1', 'Tab To Skip 2', 'Tab To Skip 3']; 
@@ -326,14 +330,11 @@ function buildMasterSheet() {
       }
       return true;
     });
-    // ------------------------
 
     tabs.forEach(function(sheet) {
       const label = sourceSS.getName() + ' → ' + sheet.getName();
       try {
         const rows = transformSheet(sheet, label);
-        
-        // Re-number Sr No globally across all processed sheets
         rows.forEach(function(row) {
           row[0] = globalSr++;
           allRows.push(row);
@@ -345,19 +346,17 @@ function buildMasterSheet() {
     });
   });
 
-  // --- Write all rows to master sheet ---
   if (allRows.length > 0) {
     masterSheet.getRange(2, 1, allRows.length, FORM1_HEADER.length).setValues(allRows);
-    Logger.log('✅ Done! ' + allRows.length + ' rows written to "' + CONFIG.targetTabName + '"');
+    Logger.log('✅ Done! ' + allRows.length + ' pending rows written to "' + CONFIG.targetTabName + '"');
   } else {
-    Logger.log('⚠️ No data rows were extracted from any source sheet.');
+    Logger.log('⚠️ No pending rows were extracted from any source sheet.');
   }
 
   if (totalErrors > 0) {
-    Logger.log('⚠️ Completed with ' + totalErrors + ' error(s). Check logs above for details.');
+    Logger.log('⚠️ Completed with ' + totalErrors + ' error(s). Check logs above.');
   }
 
-  // Auto-resize columns for readability
   for (let c = 1; c <= FORM1_HEADER.length; c++) {
     masterSheet.autoResizeColumn(c);
   }
