@@ -111,14 +111,8 @@ function getCol(row, colMap, ...keys) {
 
 // ============================================================
 //   HELPER — parse Client Name and Cust ID from a Form2 column header
-//   UPDATED: Comma is now optional to support formats with or without it.
 // ============================================================
 function parseClientColumn(headerRow) {
-  // Regex adjustments:
-  // ,?       --> makes the comma completely optional
-  // \s* --> handles zero or more spaces safely
-  // \(       --> looks for the start of brackets
-  // ([A-Za-z0-9]{4,15}) --> captures the exact client identifier alphanumeric string
   const pattern = /^(.+?)(?:,|\s)*\(([A-Za-z0-9]{4,15})\)/;
   
   for (let i = 0; i < headerRow.length; i++) {
@@ -127,7 +121,7 @@ function parseClientColumn(headerRow) {
     if (m) {
       return {
         colIndex: i,
-        clientName: m[1].replace(/^[,\s]+|[,\s]+$/g, '').trim(), // clean extra trailing commas/spaces
+        clientName: m[1].replace(/^[,\s]+|[,\s]+$/g, '').trim(),
         custId: m[2].trim()
       };
     }
@@ -194,15 +188,13 @@ function transformSheet(sheet, sheetLabel) {
   // 2. Parse client name, cust id, covenant from the special column header
   const clientInfo = parseClientColumn(headerRow);
   
-  // CRITICAL UPDATE: If Client Info or Cust ID cannot be extracted, skip this entire tab immediately!
   if (!clientInfo) {
-    Logger.log('[REJECT SHEET] ' + sheetLabel + ' — Skipped entire sheet because Client Name/Cust ID column header could not be verified.');
-    return [];
+    Logger.log('[WARN] ' + sheetLabel + ' — Could not extract Client Name/Cust ID column header. Fields will be left blank for these data rows.');
   }
 
-  const clientName    = clientInfo.clientName;
-  const custId        = clientInfo.custId;
-  const covenantColIdx = clientInfo.colIndex;
+  const clientName    = clientInfo ? clientInfo.clientName : '';
+  const custId        = clientInfo ? clientInfo.custId : '';
+  const covenantColIdx = clientInfo ? clientInfo.colIndex : -1;
 
   // 3. Process each data row (skip header row and any rows before it)
   const outputRows = [];
@@ -222,14 +214,20 @@ function transformSheet(sheet, sheetLabel) {
     }
 
     // --- Map Form2 columns → Form1 columns ---
+    const statusRaw = getCol(row, colMap, 'document status', 'doc status'); [cite: 39]
+    const status = resolveCheckbox(statusRaw); [cite: 41]
+
+    // --- CRITICAL FILTER UPDATED ---
+    // If the case status is explicitly marked as Closed, skip this entire data row.
+    if (status.trim().toLowerCase() === 'closed') {
+      continue;
+    }
+
     const conditionTypeRaw = getCol(row, colMap, 'condition type');
     const conditionType = normaliseConditionType(conditionTypeRaw);
 
     const covenantTypeRaw = getCol(row, colMap, 'covenant type');
     const covenantType = normaliseCovenantType(covenantTypeRaw);
-
-    const statusRaw = getCol(row, colMap, 'document status', 'doc status');
-    const status = resolveCheckbox(statusRaw);
 
     const aging = getCol(row, colMap, 'day past due', 'days past due', 'days past due ');
 
@@ -242,7 +240,6 @@ function transformSheet(sheet, sheetLabel) {
     const rmName       = '';
     const businessHead = '';
 
-    // Covenant — data cell in the client column for this row
     const covenantValue = (covenantColIdx >= 0 && row[covenantColIdx] !== undefined)
       ? String(row[covenantColIdx]).trim()
       : '';
@@ -254,9 +251,9 @@ function transformSheet(sheet, sheetLabel) {
       clientName,         // Client Name
       conditionType,      // Condition Type
       covenantType,       // Covenant Type
-      covenantValue,      // Covenant — from data rows under client column
-      rmName,             // RM Name (blank)
-      businessHead,       // Business Head (blank)
+      covenantValue,      // Covenant
+      rmName,             // RM Name
+      businessHead,       // Business Head
       initialDateOfDisb,  // Initial Date of Disb
       covDueDate,         // Cov Due date
       extendedDueDate,    // Extended Due Date
@@ -269,7 +266,7 @@ function transformSheet(sheet, sheetLabel) {
     srCounter++;
   }
 
-  Logger.log('[OK] ' + sheetLabel + ' — ' + outputRows.length + ' rows extracted cleanly.');
+  Logger.log('[OK] ' + sheetLabel + ' — ' + outputRows.length + ' pending rows extracted.');
   return outputRows;
 }
 
@@ -319,7 +316,6 @@ function buildMasterSheet() {
     let tabs = sourceSS.getSheets(); // Get ALL tabs first
     
     // --- EXCLUSION FILTER ---
-    // List the exact names of any specific tabs you want to hard-skip:
     const tabsToSkip = ['Tab To Skip 1', 'Tab To Skip 2', 'Tab To Skip 3']; 
     
     tabs = tabs.filter(function(sheet) {
@@ -337,7 +333,7 @@ function buildMasterSheet() {
       try {
         const rows = transformSheet(sheet, label);
         
-        // Re-number Sr No globally across all valid sheets parsed
+        // Re-number Sr No globally across all processed sheets
         rows.forEach(function(row) {
           row[0] = globalSr++;
           allRows.push(row);
