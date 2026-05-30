@@ -217,25 +217,27 @@ function transformSheet(sheet, sheetLabel) {
     const conditionTypeRaw = getCol(row, colMap, 'condition type');
     const covenantTypeRaw = getCol(row, colMap, 'covenant type');
     const statusRaw = getCol(row, colMap, 'document status', 'doc status');
+    const cleanStatus = String(statusRaw).trim().toLowerCase();
     
     const covenantValue = (covenantColIdx >= 0 && row[covenantColIdx] !== undefined)
       ? String(row[covenantColIdx]).trim()
       : '';
 
-    // --- SAFELY UPDATED CRITICAL FILTER ---
-    // If core tracking metrics are entirely unpopulated, skip it.
-    // If a sheet has NO client id header (covenantColIdx === -1), we rely safely on the remaining fields.
+    // --- STRATEGIC GHOST FILTER UPDATE ---
+    // If core tracking properties are blank, and status is NOT "pending", treat it as an unpopulated ghost row.
     if (String(conditionTypeRaw).trim() === '' && 
         String(covenantTypeRaw).trim() === '' && 
-        String(statusRaw).trim() === '' && 
+        cleanStatus !== 'pending' && 
         (covenantColIdx === -1 || covenantValue === '')) {
       continue;
     }
 
     const status = resolveCheckbox(statusRaw);
+    const statusCheck = status.trim().toLowerCase();
 
-    // Filter out Closed cases (Only pick pending)
-    if (status.trim().toLowerCase() === 'closed') {
+    // --- EXPLICIT WHITELIST FILTER ---
+    // Drop the row entirely unless the status is precisely "pending"
+    if (statusCheck !== 'pending') {
       continue;
     }
 
@@ -255,8 +257,8 @@ function transformSheet(sheet, sheetLabel) {
     // Build Form1 row layout
     const form1Row = [
       srCounter,          // Sr No (auto-increment)
-      custId,             // Cust ID (will be blank if unparsed)
-      clientName,         // Client Name (will be blank if unparsed)
+      custId,             // Cust ID
+      clientName,         // Client Name
       conditionType,      // Condition Type
       covenantType,       // Covenant Type
       covenantValue,      // Covenant
